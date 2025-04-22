@@ -22,6 +22,8 @@ The current focus is on initializing the project's memory bank and preparing to 
 ## Recent Changes
 
 - **April 22, 2025**: Initialized the memory bank with core project documentation
+- **April 22, 2025**: Fixed schema configuration in data provider that was causing 404 errors with the error message "relation 'public.ConfigDB.items' does not exist"
+- **April 22, 2025**: Fixed primary key configuration in data provider to use `item_id` instead of the default `id` for the items resource, resolving the error "column items.id does not exist"
 
 ## Next Steps
 
@@ -89,3 +91,7 @@ The immediate next steps for this project are:
    - Need to understand how React Admin's data requirements map to Supabase's API
    - Must handle UUID primary keys properly
    - Need to configure proper filter and sort operations
+   - The `ra-supabase` provider requires schema to be specified as a function that returns a string: `schema: () => 'ConfigDB'`
+   - Previous approach of manually prepending schema name to resources (`ConfigDB.${resource}`) caused incorrect table paths like `public.ConfigDB.items`
+   - React Admin defaults to using `id` as the primary key column, but our schema uses `item_id` (and likely similar for other tables)
+   - The `primaryKeys` option in the data provider configuration maps resources to their actual primary key columns

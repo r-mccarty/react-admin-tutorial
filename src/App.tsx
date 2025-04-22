@@ -6,7 +6,7 @@ import { ItemsList, ItemsShow, ItemsEdit, ItemsCreate } from "./items";
 export const App = () => (
   <Admin dataProvider={dataProvider}>
      {/* The only resource we need is 'items' from the ConfigDB schema */}
-     {/* Our data provider automatically prepends "ConfigDB." to all resource names */}
+     {/* Our data provider is configured to use the 'ConfigDB' schema */}
      <Resource
         name="items"
         list={ItemsList}
