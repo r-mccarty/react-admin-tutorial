@@ -1,0 +1,374 @@
+-- Create the dedicated schema if it doesn't exist
+CREATE SCHEMA IF NOT EXISTS "ConfigDB";
+
+-- Set the search path for the current session so objects are created in the new schema
+-- Include 'public' as Supabase extensions/functions might reside there.
+SET search_path TO "ConfigDB", public;
+
+-- Grant usage on the schema to standard Supabase roles
+GRANT USAGE ON SCHEMA "ConfigDB" TO postgres;
+GRANT USAGE ON SCHEMA "ConfigDB" TO anon;
+GRANT USAGE ON SCHEMA "ConfigDB" TO authenticated; -- Grant to authenticated role as well
+
+----------- TABLES -----------
+
+-- 1. General Items Table (ASY, PCA, Components)
+CREATE TABLE "ConfigDB".items (
+    item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    item_number TEXT NOT NULL UNIQUE, -- e.g., 'ASY-1099', 'PCA-1011', 'HYB-500'
+    item_type TEXT NOT NULL CHECK (item_type IN ('ASY', 'PCA', 'COMPONENT', 'MODULE')), -- Type classifier
+    description TEXT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX idx_items_item_number ON "ConfigDB".items(item_number);
+
+-- 2. Item Variants Table
+CREATE TABLE "ConfigDB".item_variants (
+    variant_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    item_id UUID NOT NULL REFERENCES "ConfigDB".items(item_id) ON DELETE CASCADE,
+    variant_identifier TEXT NOT NULL, -- e.g., '-01', 'EDU', '-02 Flight', 'Rev A'
+    full_variant_name TEXT UNIQUE, -- Optional: Auto-generated or manually set like 'ASY-1099-01 EDU'
+    description TEXT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE (item_id, variant_identifier)
+);
+CREATE INDEX idx_item_variants_item_id ON "ConfigDB".item_variants(item_id);
+
+-- 3. Configuration Attributes Table (for semantic tagging)
+CREATE TABLE "ConfigDB".configuration_attributes (
+    attribute_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    attribute_name TEXT NOT NULL UNIQUE, -- e.g., 'Environment', 'Thermal Grade', 'Customer'
+    description TEXT,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 4. Variant Attributes Link Table (Many-to-Many: Variants <-> Attributes)
+CREATE TABLE "ConfigDB".variant_attribute_values (
+    variant_attribute_value_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    variant_id UUID NOT NULL REFERENCES "ConfigDB".item_variants(variant_id) ON DELETE CASCADE,
+    attribute_id UUID NOT NULL REFERENCES "ConfigDB".configuration_attributes(attribute_id) ON DELETE RESTRICT,
+    attribute_value TEXT NOT NULL, -- e.g., 'EDU', 'Flight', 'Industrial', 'Customer X'
+    created_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE (variant_id, attribute_id)
+);
+CREATE INDEX idx_variant_attribute_values_variant_id ON "ConfigDB".variant_attribute_values(variant_id);
+CREATE INDEX idx_variant_attribute_values_attribute_id ON "ConfigDB".variant_attribute_values(attribute_id);
+
+-- 5. Bills of Materials (BOMs) Header Table
+CREATE TABLE "ConfigDB".boms (
+    bom_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    defined_variant_id UUID NOT NULL UNIQUE REFERENCES "ConfigDB".item_variants(variant_id) ON DELETE CASCADE,
+    bom_revision TEXT DEFAULT 'A',
+    description TEXT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX idx_boms_defined_variant_id ON "ConfigDB".boms(defined_variant_id);
+
+-- 6. BOM Lines Table (The actual components in a BOM)
+CREATE TABLE "ConfigDB".bom_lines (
+    bom_line_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    bom_id UUID NOT NULL REFERENCES "ConfigDB".boms(bom_id) ON DELETE CASCADE,
+    component_variant_id UUID NOT NULL REFERENCES "ConfigDB".item_variants(variant_id) ON DELETE RESTRICT,
+    quantity INTEGER NOT NULL CHECK (quantity > 0),
+    reference_designators TEXT,
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX idx_bom_lines_bom_id ON "ConfigDB".bom_lines(bom_id);
+CREATE INDEX idx_bom_lines_component_variant_id ON "ConfigDB".bom_lines(component_variant_id);
+
+-- 7. Assembly Structure Table (Parent-Child links)
+CREATE TABLE "ConfigDB".assembly_structure (
+    assembly_structure_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    parent_variant_id UUID NOT NULL REFERENCES "ConfigDB".item_variants(variant_id) ON DELETE CASCADE,
+    child_variant_id UUID NOT NULL REFERENCES "ConfigDB".item_variants(variant_id) ON DELETE RESTRICT,
+    quantity INTEGER NOT NULL CHECK (quantity > 0),
+    reference_designators TEXT,
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE (parent_variant_id, child_variant_id)
+);
+CREATE INDEX idx_assembly_structure_parent_variant_id ON "ConfigDB".assembly_structure(parent_variant_id);
+CREATE INDEX idx_assembly_structure_child_variant_id ON "ConfigDB".assembly_structure(child_variant_id);
+
+
+----------- VIEWS -----------
+
+-- View 1: Enriched Variant Details (Useful for selection lists)
+CREATE VIEW "ConfigDB".view_variant_details AS
+SELECT
+    var.variant_id,
+    var.item_id,
+    itm.item_number,
+    var.variant_identifier,
+    var.full_variant_name, -- Use this if populated, otherwise combine below
+    COALESCE(var.full_variant_name, itm.item_number || '-' || var.variant_identifier) as effective_variant_name,
+    itm.item_type,
+    itm.description AS item_description,
+    var.description AS variant_description,
+    env_attr.attribute_value AS environment,
+    thermal_attr.attribute_value AS thermal_grade,
+    cust_attr.attribute_value AS customer,
+    var.created_at,
+    var.updated_at
+FROM
+    "ConfigDB".item_variants var
+JOIN
+    "ConfigDB".items itm ON var.item_id = itm.item_id
+LEFT JOIN
+    "ConfigDB".variant_attribute_values env_attr ON var.variant_id = env_attr.variant_id
+LEFT JOIN
+    "ConfigDB".configuration_attributes env_conf ON env_attr.attribute_id = env_conf.attribute_id AND env_conf.attribute_name = 'Environment'
+LEFT JOIN
+    "ConfigDB".variant_attribute_values thermal_attr ON var.variant_id = thermal_attr.variant_id
+LEFT JOIN
+    "ConfigDB".configuration_attributes thermal_conf ON thermal_attr.attribute_id = thermal_conf.attribute_id AND thermal_conf.attribute_name = 'Thermal Grade'
+LEFT JOIN
+    "ConfigDB".variant_attribute_values cust_attr ON var.variant_id = cust_attr.variant_id
+LEFT JOIN
+    "ConfigDB".configuration_attributes cust_conf ON cust_attr.attribute_id = cust_conf.attribute_id AND cust_conf.attribute_name = 'Customer';
+
+
+-- View 2: Enriched Assembly Structure (Shows parent/child details including environment)
+CREATE VIEW "ConfigDB".view_assembly_children_details AS
+SELECT
+    asm_struct.assembly_structure_id,
+    -- Parent Info
+    parent_variant.variant_id as parent_variant_id,
+    parent_item.item_number as parent_item_number,
+    parent_variant.variant_identifier as parent_variant_identifier,
+    COALESCE(parent_variant.full_variant_name, parent_item.item_number || '-' || parent_variant.variant_identifier) as parent_effective_name,
+    parent_env_attr.attribute_value as parent_environment,
+    -- Child Info
+    child_variant.variant_id as child_variant_id,
+    child_item.item_number as child_item_number,
+    child_variant.variant_identifier as child_variant_identifier,
+    COALESCE(child_variant.full_variant_name, child_item.item_number || '-' || child_variant.variant_identifier) as child_effective_name,
+    child_item.item_type as child_item_type,
+    child_item.description as child_description,
+    child_env_attr.attribute_value as child_environment,
+    child_thermal_attr.attribute_value as child_thermal_grade,
+    -- Assembly Link Info
+    asm_struct.quantity,
+    asm_struct.reference_designators,
+    asm_struct.notes,
+    asm_struct.created_at
+FROM
+    "ConfigDB".assembly_structure asm_struct
+JOIN
+    "ConfigDB".item_variants parent_variant ON asm_struct.parent_variant_id = parent_variant.variant_id
+JOIN
+    "ConfigDB".items parent_item ON parent_variant.item_id = parent_item.item_id
+JOIN
+    "ConfigDB".item_variants child_variant ON asm_struct.child_variant_id = child_variant.variant_id
+JOIN
+    "ConfigDB".items child_item ON child_variant.item_id = child_item.item_id
+-- Join to get parent environment
+LEFT JOIN "ConfigDB".variant_attribute_values parent_env_attr ON parent_variant.variant_id = parent_env_attr.variant_id
+LEFT JOIN "ConfigDB".configuration_attributes parent_env_conf ON parent_env_attr.attribute_id = parent_env_conf.attribute_id AND parent_env_conf.attribute_name = 'Environment'
+-- Join to get child environment
+LEFT JOIN "ConfigDB".variant_attribute_values child_env_attr ON child_variant.variant_id = child_env_attr.variant_id
+LEFT JOIN "ConfigDB".configuration_attributes child_env_conf ON child_env_attr.attribute_id = child_env_conf.attribute_id AND child_env_conf.attribute_name = 'Environment'
+-- Join to get child thermal grade
+LEFT JOIN "ConfigDB".variant_attribute_values child_thermal_attr ON child_variant.variant_id = child_thermal_attr.variant_id
+LEFT JOIN "ConfigDB".configuration_attributes child_thermal_conf ON child_thermal_attr.attribute_id = child_thermal_conf.attribute_id AND child_thermal_conf.attribute_name = 'Thermal Grade';
+
+
+-- View 3: Full Exploded BOM View
+CREATE VIEW "ConfigDB".view_full_bom AS
+SELECT
+    b.bom_id,
+    def_var.variant_id as defined_variant_id,
+    def_item.item_number as defined_item_number,
+    def_var.variant_identifier as defined_variant_identifier,
+    COALESCE(def_var.full_variant_name, def_item.item_number || '-' || def_var.variant_identifier) as defined_effective_name,
+    def_item.item_type as defined_item_type,
+    b.bom_revision,
+    bl.bom_line_id,
+    comp_var.variant_id as component_variant_id,
+    comp_item.item_number as component_item_number,
+    comp_var.variant_identifier as component_variant_identifier,
+    COALESCE(comp_var.full_variant_name, comp_item.item_number || '-' || comp_var.variant_identifier) as component_effective_name,
+    comp_item.item_type as component_item_type,
+    comp_item.description as component_description,
+    bl.quantity,
+    bl.reference_designators,
+    bl.notes as bom_line_notes
+FROM
+    "ConfigDB".boms b
+JOIN
+    "ConfigDB".item_variants def_var ON b.defined_variant_id = def_var.variant_id
+JOIN
+    "ConfigDB".items def_item ON def_var.item_id = def_item.item_id
+JOIN
+    "ConfigDB".bom_lines bl ON b.bom_id = bl.bom_id
+JOIN
+    "ConfigDB".item_variants comp_var ON bl.component_variant_id = comp_var.variant_id
+JOIN
+    "ConfigDB".items comp_item ON comp_var.item_id = comp_item.item_id;
+
+
+----------- PERMISSIONS -----------
+-- NOTE: Granting write access to 'anon' is for prototype simplicity ONLY.
+-- SECURE THIS with RLS and proper authentication for non-prototype use.
+
+-- Grant privileges on TABLES to roles (this includes SELECT on views)
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA "ConfigDB" TO postgres;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA "ConfigDB" TO anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA "ConfigDB" TO authenticated;
+
+-- Grant usage on sequences if any were implicitly created (less common with UUIDs)
+-- GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA "ConfigDB" TO postgres;
+-- GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA "ConfigDB" TO anon;
+-- GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA "ConfigDB" TO authenticated;
+
+
+----------- SEED DATA -----------
+
+-- Set path again just in case session changed
+SET search_path TO "ConfigDB", public;
+
+-- Seed Configuration Attributes (IF NOT ALREADY DONE)
+INSERT INTO "ConfigDB".configuration_attributes (attribute_name, description) VALUES
+    ('Environment', 'Operational environment like EDU, Flight, Qualification'),
+    ('Thermal Grade', 'Temperature rating like Industrial, Military'),
+    ('Customer', 'Specific customer designation if applicable')
+ON CONFLICT (attribute_name) DO NOTHING; -- Avoid errors if run twice
+
+-- Use a DO block to manage variables and transactions
+DO $$
+DECLARE
+    -- Attribute IDs
+    env_attr_id UUID;
+    thermal_attr_id UUID;
+    cust_attr_id UUID;
+    -- Item IDs
+    asy1099_item_id UUID;
+    pca1011_item_id UUID;
+    hyb500_item_id UUID;
+    res1k_item_id UUID;
+    -- Variant IDs
+    asy1099_01_edu_var_id UUID;
+    asy1099_02_flt_var_id UUID;
+    pca1011_01_edu_var_id UUID;
+    pca1011_02_flt_var_id UUID;
+    hyb500_edu_var_id UUID;
+    hyb500_flt_var_id UUID;
+    res1k_comm_var_id UUID; -- Commercial grade resistor variant
+    res1k_mil_var_id UUID;  -- Military grade resistor variant
+    -- BOM IDs
+    pca1011_01_edu_bom_id UUID;
+    pca1011_02_flt_bom_id UUID;
+BEGIN
+    -- 1. Get attribute IDs first
+    SELECT attribute_id INTO env_attr_id FROM "ConfigDB".configuration_attributes WHERE attribute_name = 'Environment';
+    SELECT attribute_id INTO thermal_attr_id FROM "ConfigDB".configuration_attributes WHERE attribute_name = 'Thermal Grade';
+    SELECT attribute_id INTO cust_attr_id FROM "ConfigDB".configuration_attributes WHERE attribute_name = 'Customer';
+
+    -- Check if attributes were found (basic validation)
+    IF env_attr_id IS NULL OR thermal_attr_id IS NULL THEN
+       RAISE EXCEPTION 'Required configuration attributes not found';
+    END IF;
+
+    -- 2. Seed Items (without returning)
+    INSERT INTO "ConfigDB".items (item_number, item_type, description) VALUES
+        ('ASY-1099', 'ASY', 'Top Level System Assembly'),
+        ('PCA-1011', 'PCA', 'Main Processor Card Assembly'),
+        ('HYB-500', 'MODULE', 'RF Hybrid Module'),
+        ('RES-1K-0402', 'COMPONENT', 'Resistor 1k Ohm 0402')
+    ON CONFLICT (item_number) DO NOTHING; -- Avoid errors if run multiple times
+
+    -- 3. Get Item IDs (query after insert)
+    SELECT item_id INTO asy1099_item_id FROM "ConfigDB".items WHERE item_number = 'ASY-1099';
+    SELECT item_id INTO pca1011_item_id FROM "ConfigDB".items WHERE item_number = 'PCA-1011';
+    SELECT item_id INTO hyb500_item_id FROM "ConfigDB".items WHERE item_number = 'HYB-500';
+    SELECT item_id INTO res1k_item_id FROM "ConfigDB".items WHERE item_number = 'RES-1K-0402';
+
+    -- Check if items were found
+    IF asy1099_item_id IS NULL OR pca1011_item_id IS NULL OR hyb500_item_id IS NULL OR res1k_item_id IS NULL THEN
+       RAISE EXCEPTION 'Required base items not found after insert';
+    END IF;
+
+    -- 4. Seed Item Variants (without returning)
+    INSERT INTO "ConfigDB".item_variants (item_id, variant_identifier, full_variant_name, description) VALUES
+        (asy1099_item_id, '-01 EDU', 'ASY-1099-01 EDU', 'Assembly, EDU Version'),
+        (asy1099_item_id, '-02 Flight', 'ASY-1099-02 Flight', 'Assembly, Flight Version'),
+        (pca1011_item_id, '-01 EDU', 'PCA-1011-01 EDU', 'PCA, EDU Version'),
+        (pca1011_item_id, '-02 Flight', 'PCA-1011-02 Flight', 'PCA, Flight Version'),
+        (hyb500_item_id, 'EDU', 'HYB-500-EDU', 'Hybrid Module, EDU Grade'),
+        (hyb500_item_id, 'FLT', 'HYB-500-FLT', 'Hybrid Module, Flight Grade'),
+        (res1k_item_id, 'COMM', 'RES-1K-0402-COMM', 'Resistor, 1k 0402, Commercial Temp'),
+        (res1k_item_id, 'MIL', 'RES-1K-0402-MIL', 'Resistor, 1k 0402, Military Temp')
+    ON CONFLICT (item_id, variant_identifier) DO NOTHING; -- Avoid errors if run multiple times
+
+    -- 5. Get Variant IDs (query after insert, using unique constraints)
+    SELECT variant_id INTO asy1099_01_edu_var_id FROM "ConfigDB".item_variants WHERE item_id = asy1099_item_id AND variant_identifier = '-01 EDU';
+    SELECT variant_id INTO asy1099_02_flt_var_id FROM "ConfigDB".item_variants WHERE item_id = asy1099_item_id AND variant_identifier = '-02 Flight';
+    SELECT variant_id INTO pca1011_01_edu_var_id FROM "ConfigDB".item_variants WHERE item_id = pca1011_item_id AND variant_identifier = '-01 EDU';
+    SELECT variant_id INTO pca1011_02_flt_var_id FROM "ConfigDB".item_variants WHERE item_id = pca1011_item_id AND variant_identifier = '-02 Flight';
+    SELECT variant_id INTO hyb500_edu_var_id FROM "ConfigDB".item_variants WHERE item_id = hyb500_item_id AND variant_identifier = 'EDU';
+    SELECT variant_id INTO hyb500_flt_var_id FROM "ConfigDB".item_variants WHERE item_id = hyb500_item_id AND variant_identifier = 'FLT';
+    SELECT variant_id INTO res1k_comm_var_id FROM "ConfigDB".item_variants WHERE item_id = res1k_item_id AND variant_identifier = 'COMM';
+    SELECT variant_id INTO res1k_mil_var_id FROM "ConfigDB".item_variants WHERE item_id = res1k_item_id AND variant_identifier = 'MIL';
+
+    -- Check if variants were found
+    IF asy1099_01_edu_var_id IS NULL OR pca1011_01_edu_var_id IS NULL OR hyb500_edu_var_id IS NULL OR res1k_comm_var_id IS NULL OR
+       asy1099_02_flt_var_id IS NULL OR pca1011_02_flt_var_id IS NULL OR hyb500_flt_var_id IS NULL OR res1k_mil_var_id IS NULL THEN
+       RAISE EXCEPTION 'Required item variants not found after insert';
+    END IF;
+
+    -- 6. Seed Variant Attribute Values (using retrieved IDs)
+    INSERT INTO "ConfigDB".variant_attribute_values (variant_id, attribute_id, attribute_value) VALUES
+        (asy1099_01_edu_var_id, env_attr_id, 'EDU'),
+        (asy1099_02_flt_var_id, env_attr_id, 'Flight'),
+        (pca1011_01_edu_var_id, env_attr_id, 'EDU'),
+        (pca1011_01_edu_var_id, thermal_attr_id, 'Industrial'), -- EDU PCA is Industrial grade
+        (pca1011_02_flt_var_id, env_attr_id, 'Flight'),
+        (pca1011_02_flt_var_id, thermal_attr_id, 'Military'), -- Flight PCA is Military grade
+        (hyb500_edu_var_id, env_attr_id, 'EDU'),
+        (hyb500_edu_var_id, thermal_attr_id, 'Industrial'),
+        (hyb500_flt_var_id, env_attr_id, 'Flight'),
+        (hyb500_flt_var_id, thermal_attr_id, 'Military'),
+        (res1k_comm_var_id, thermal_attr_id, 'Commercial'),
+        (res1k_mil_var_id, thermal_attr_id, 'Military')
+    ON CONFLICT (variant_id, attribute_id) DO NOTHING;
+
+    -- 7. Seed BOMs (without returning)
+    INSERT INTO "ConfigDB".boms (defined_variant_id, bom_revision, description) VALUES
+        (pca1011_01_edu_var_id, 'A', 'BOM for EDU PCA'),
+        (pca1011_02_flt_var_id, 'A', 'BOM for Flight PCA')
+    ON CONFLICT (defined_variant_id) DO NOTHING; -- BOMs are unique per variant
+
+    -- 8. Get BOM IDs (query after insert)
+    SELECT bom_id INTO pca1011_01_edu_bom_id FROM "ConfigDB".boms WHERE defined_variant_id = pca1011_01_edu_var_id;
+    SELECT bom_id INTO pca1011_02_flt_bom_id FROM "ConfigDB".boms WHERE defined_variant_id = pca1011_02_flt_var_id;
+
+    -- Check if BOMs were found
+     IF pca1011_01_edu_bom_id IS NULL OR pca1011_02_flt_bom_id IS NULL THEN
+       RAISE EXCEPTION 'Required BOMs not found after insert';
+    END IF;
+
+    -- 9. Seed BOM Lines (using retrieved IDs)
+    -- EDU BOM contains EDU Hybrid and Commercial Resistor
+    INSERT INTO "ConfigDB".bom_lines (bom_id, component_variant_id, quantity, reference_designators) VALUES
+        (pca1011_01_edu_bom_id, hyb500_edu_var_id, 1, 'U1'),
+        (pca1011_01_edu_bom_id, res1k_comm_var_id, 5, 'R1, R2, R3, R4, R5');
+        -- Add ON CONFLICT later if needed, depends on exact uniqueness desired
+    -- Flight BOM contains Flight Hybrid and Military Resistor
+    INSERT INTO "ConfigDB".bom_lines (bom_id, component_variant_id, quantity, reference_designators) VALUES
+        (pca1011_02_flt_bom_id, hyb500_flt_var_id, 1, 'U1'),
+        (pca1011_02_flt_bom_id, res1k_mil_var_id, 5, 'R1, R2, R3, R4, R5');
+        -- Add ON CONFLICT later if needed
+
+    -- 10. Seed Assembly Structure (using retrieved IDs)
+    INSERT INTO "ConfigDB".assembly_structure (parent_variant_id, child_variant_id, quantity, reference_designators) VALUES
+        (asy1099_01_edu_var_id, pca1011_01_edu_var_id, 1, 'PCA Slot 1'),
+        (asy1099_02_flt_var_id, pca1011_02_flt_var_id, 1, 'PCA Slot 1')
+    ON CONFLICT (parent_variant_id, child_variant_id) DO NOTHING;
+
+END $$;
+
+-- End of script

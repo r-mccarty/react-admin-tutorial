@@ -1,18 +1,19 @@
 // src/App.tsx
 import { Admin, Resource } from "react-admin";
-import { dataProvider } from './dataProvider'; 
-import { PostList } from "./posts";           
-import { ProfileList } from "./profiles";       
+import { dataProvider } from './dataProvider';
+import { ItemsList, ItemsShow, ItemsEdit, ItemsCreate } from "./items";     
 
 export const App = () => (
   <Admin dataProvider={dataProvider}>
-     {/* Resource name "posts" maps to 'public.posts' table */}
-     <Resource name="posts" list={PostList} />
-
-     {/* Resource name "profiles" maps clearly to 'public.profiles' table */}
+     {/* The only resource we need is 'items' from the ConfigDB schema */}
+     {/* Our data provider automatically prepends "ConfigDB." to all resource names */}
      <Resource
-        name="profiles"
-        list={ProfileList}
+        name="items"
+        list={ItemsList}
+        show={ItemsShow}
+        edit={ItemsEdit}
+        create={ItemsCreate}
+        options={{ label: 'Items' }}
       />
   </Admin>
 );
