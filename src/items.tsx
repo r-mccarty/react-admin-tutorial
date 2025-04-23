@@ -10,10 +10,25 @@ import {
   SelectInput,
   Show,
   SimpleShowLayout,
-  required
+  required,
+  // Import useRecordContext
+  useRecordContext
 } from "react-admin";
+import * as React from 'react'; // Make sure React is imported if creating a component
 
-// List view for items - displays item_number, item_type, and description
+// --- Custom Title Component ---
+// This component will be used for both Edit and Show views.
+// It displays "Item:" followed by the item_number, or a fallback.
+const ItemTitle = () => {
+  const record = useRecordContext();
+  // Check if the record is loaded, otherwise show a generic title or loading text
+  // Using record.item_number based on your field names
+  return <span>Item: {record ? `"${record.item_number}"` : 'Details'}</span>;
+  // --- Alternative using description: ---
+  // return <span>{record ? record.description : 'Item Details'}</span>;
+};
+
+// List view - unchanged
 export const ItemsList = () => (
   <List>
     <Datagrid rowClick="show">
@@ -24,9 +39,10 @@ export const ItemsList = () => (
   </List>
 );
 
-// Show view for a single item - displays detailed view of item_number, item_type, and description
+// Show view - MODIFIED
 export const ItemsShow = () => (
-  <Show>
+  // Add the title prop here
+  <Show title={<ItemTitle />}>
     <SimpleShowLayout>
       <TextField source="item_number" label="Item Number" />
       <TextField source="item_type" label="Item Type" />
@@ -35,7 +51,7 @@ export const ItemsShow = () => (
   </Show>
 );
 
-// Common form configuration for Create and Edit views
+// Common form configuration - unchanged
 const ItemsForm = () => (
   <SimpleForm>
     <TextInput source="item_number" label="Item Number" validate={required()} />
@@ -54,14 +70,15 @@ const ItemsForm = () => (
   </SimpleForm>
 );
 
-// Edit view for an existing item
+// Edit view - MODIFIED
 export const ItemsEdit = () => (
-  <Edit>
+  // Add the title prop here
+  <Edit title={<ItemTitle />}>
     <ItemsForm />
   </Edit>
 );
 
-// Create view for a new item
+// Create view - unchanged (Create views usually have a static title like "Create Item")
 export const ItemsCreate = () => (
   <Create>
     <ItemsForm />
