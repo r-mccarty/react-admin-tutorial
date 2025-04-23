@@ -4,17 +4,32 @@ import { createClient } from '@supabase/supabase-js';
 import { DataProvider } from 'react-admin';
 
 // Initialize your Supabase client
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL; // Ensure these are in your .env file
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+if (!supabaseUrl || !supabaseAnonKey) {
+  throw new Error("Supabase URL or Anon Key is missing. Check your .env file.");
+}
+
 const supabaseClient = createClient(supabaseUrl, supabaseAnonKey);
 
-// Create the data provider instance, specifying the schema and primary keys
+// Define primary keys map - VALUES MUST BE ARRAYS OF STRINGS
+const primaryKeys = new Map<string, string[]>([
+  ['items', ['item_id']],
+  ['item_variants', ['variant_id']],
+  ['configuration_attributes', ['attribute_id']],
+  ['variant_attribute_values', ['variant_attribute_value_id']],
+  ['boms', ['bom_id']],
+  ['bom_lines', ['bom_line_id']],
+  ['assembly_structure', ['assembly_structure_id']]
+]);
+
+// Create the data provider instance
 export const dataProvider: DataProvider = supabaseDataProvider({
+  // Add instanceUrl and apiKey back to satisfy the type definition
   instanceUrl: supabaseUrl,
   apiKey: supabaseAnonKey,
-  supabaseClient: supabaseClient, // Pass the initialized client
-  schema: () => 'ConfigDB', // Specify the schema as a function that returns the schema name
-  primaryKeys: new Map([
-    ['items', 'item_id'] // Specify that items table uses item_id as primary key
-  ]) as any // Type assertion to bypass type checking
+  supabaseClient: supabaseClient, // Still good practice to pass the client
+  schema: () => 'ConfigDB',
+  primaryKeys: primaryKeys
 });

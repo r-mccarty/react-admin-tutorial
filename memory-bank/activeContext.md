@@ -24,6 +24,7 @@ The current focus is on initializing the project's memory bank and preparing to 
 - **April 22, 2025**: Initialized the memory bank with core project documentation
 - **April 22, 2025**: Fixed schema configuration in data provider that was causing 404 errors with the error message "relation 'public.ConfigDB.items' does not exist"
 - **April 22, 2025**: Fixed primary key configuration in data provider to use `item_id` instead of the default `id` for the items resource, resolving the error "column items.id does not exist"
+- **April 22, 2025**: Updated data provider to include primary key mappings for all resources in the ConfigDB schema, resolving HTTP 400 errors when accessing resources with custom primary keys
 
 ## Next Steps
 
